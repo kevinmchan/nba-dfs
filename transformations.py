@@ -67,6 +67,100 @@ class PlayerAverage(BaseTransformation):
         return lineup[["player_id"]].merge(avgs, how="left", on=["player_id"])
 
 
+class OpponentAboveAverageAllowed(BaseTransformation):
+    def __init__(self, window, stats):
+        super().__init__()
+        self._window = window
+        self._stats = stats
+
+    def _sum_stats_by_game_team(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
+        return (
+            historical_stats
+            .groupby(["game_id", "team_id", "opp_team_id", "date"])[self._stats]
+            .sum()
+            .reset_index()
+            .sort_values(by=["date", "team_id"])
+        )
+    
+    def _historical_team_average(self, team_game_stats: pd.DataFrame) -> pd.DataFrame:
+        return (
+            team_game_stats
+            .pipe(
+                lambda x:
+                    x[["team_id", "game_id", "date"]]
+                    .join(
+                        x.groupby(["team_id"])[self._stats]
+                        .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
+                    )
+            )
+        )
+
+    def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
+        # total stats per game
+        total_per_game = self._sum_stats_by_game_team(historical_stats)
+
+        # average team stat scored
+        team_avg = self._historical_team_average(total_per_game)
+
+        # above average stats scored
+        above_avg_allowed = total_per_game.copy()
+        for stat in self._stats:
+            above_avg_allowed[stat] = total_per_game[stat] - team_avg[stat]
+
+        # average opponent allowed above average
+        opp_avg_allowed = (
+            above_avg_allowed
+            .pipe(
+                lambda x:
+                    x[["opp_team_id", "game_id"]]
+                    .join(
+                        x.groupby(["opp_team_id"])[self._stats]
+                        .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
+                        .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_above_avg")
+                    )
+            )
+        )
+
+        # merge opponent team stats to player-games
+        player_opp_avg_allowed = (
+            historical_stats[["player_id", "team_id", "game_id", "opp_team_id"]]
+            .merge(opp_avg_allowed, how="left", on=["game_id", "opp_team_id"])
+            .drop(columns=["opp_team_id"])
+        )
+
+        return player_opp_avg_allowed
+
+    def current_features(self, lineup: pd.DataFrame, historical_stats: pd.DataFrame) -> pd.DataFrame:
+        # total stats per game
+        total_per_game = self._sum_stats_by_game_team(historical_stats)
+
+        # average team stat scored
+        team_avg = self._historical_team_average(total_per_game)
+
+        # above average stats scored
+        above_avg_allowed = total_per_game.copy()
+        for stat in self._stats:
+            above_avg_allowed[stat] = total_per_game[stat] - team_avg[stat]
+
+        # average opponent allowed above average
+        opp_avg_allowed = (
+            above_avg_allowed
+            .groupby(["opp_team_id"])
+            .apply(lambda x: x.nlargest(self._window, "date")[self._stats].mean())
+            .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_above_avg")
+            .reset_index()
+        )
+
+        # merge opponent team stats to player-games
+        player_opp_avg_allowed = (
+            lineup[["player_id", "opp_team_id"]]
+            .merge(opp_avg_allowed, how="left", on=["opp_team_id"])
+            .drop(columns=["opp_team_id"])
+        )
+
+        return player_opp_avg_allowed
+
+
 class OpponentAverageAllowed(BaseTransformation):
     def __init__(self, window, stats):
         super().__init__()
