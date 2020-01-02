@@ -167,7 +167,7 @@ class OpponentAverageAllowed(BaseTransformation):
         self._window = window
         self._stats = stats
 
-    def historical_features(self, historical_stats) -> pd.DataFrame:
+    def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         required_columns = ["player_id", "team_id", "game_id", "opp_team_id", "date"] + self._stats
         self.check_required_columns(df=historical_stats, cols=required_columns, name="Stats")
 
