@@ -67,6 +67,35 @@ class PlayerAverage(BaseTransformation):
         return lineup[["player_id"]].merge(avgs, how="left", on=["player_id"])
 
 
+class PrevStartingRate(BaseTransformation):
+    def __init__(self, window):
+        super().__init__()
+        self._window = window
+
+    def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
+        return (
+            historical_stats
+            .sort_values(by=["player_id", "date"])
+            .assign(prev_starts=lambda x:
+                x
+                .groupby(["player_id"])["starter"]
+                .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
+            )
+            .rename(columns={"prev_starts": f"prev_starts_{self._window}g"})
+            [["game_id", "team_id", "player_id", f"prev_starts_{self._window}g"]]
+        )
+
+    def current_features(self, lineup: pd.DataFrame, historical_stats: pd.DataFrame) -> pd.DataFrame:
+        return (
+            historical_stats
+            .groupby(["player_id"])
+            .apply(lambda x: x.nlargest(self._window, "date")["starter"].mean())
+            .rename(f"prev_starts_{self._window}g")
+            .reset_index()
+            .merge(lineup[["player_id"]])
+        )
+
+
 class OpponentAboveAverageAllowed(BaseTransformation):
     def __init__(self, window, stats):
         super().__init__()
