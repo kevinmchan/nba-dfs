@@ -418,3 +418,12 @@ def fanduel_score(x, suffix=""):
         x["fg3m" + suffix] + x["ast" + suffix] * 1.5 + x["blk" + suffix] * 3 + x["fgm" + suffix] * 2
         + x["ftm" + suffix] + x["reb" + suffix] * 1.2 + x["stl" + suffix] * 3 - x["tov" + suffix]
     )
+
+
+def update_position(df, player_id, position):
+    df = df.copy()
+    for pos in ["C", "PF", "SF", "SG", "PG"]:
+        df.loc[lambda x: x["player_id"] == player_id, f"position_{pos}"] = 0
+    df.loc[lambda x: x["player_id"] == player_id, f"position_{position}"] = 1
+    df.loc[lambda x: x["player_id"] == player_id, "position"] = position
+    return df
