@@ -1,0 +1,19 @@
+name: nbadfs
+channels:
+  - defaults
+dependencies:
+  - ipykernel
+  - pandas
+  - pip
+  - python
+  - scikit-learn
+  - seaborn
+  - pip:
+      - cookiecutter
+      - dnspython
+      - ohmysportsfeedspy
+      - pulp
+      - pymongo
+      - simplejson
+      - tqdm
+      - xgboost
