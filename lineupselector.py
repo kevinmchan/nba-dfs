@@ -27,7 +27,8 @@ class FanDuelOptimizer:
             budget: sum(x_i * salary_i) <= 60_000
             roster: for each role r, sum(x_i * role_i_r) <= slots_r
             num_players: sum(x_i) = 9
-            binary: for each player i, x_i in (0, 1)
+            no_blocklist_players
+            binary_decision_var: for each player i, x_i in (0, 1)
         """
         # model
         opt_model = plp.LpProblem(name="Lineup_Optimization")
@@ -48,13 +49,13 @@ class FanDuelOptimizer:
             )
         )
 
-        # blacklist players
+        # blocklist players
         opt_model.addConstraint(
             plp.LpConstraint(
-                e=plp.lpSum(blacklisted * player for (blacklisted, player) in zip(players["blacklisted"], x_vars)),
+                e=plp.lpSum(blocklisted * player for (blocklisted, player) in zip(players["blocklisted"], x_vars)),
                 sense=plp.LpConstraintEQ,
                 rhs=0,
-                name="player_blacklist"
+                name="player_blocklist"
             )
         )
 

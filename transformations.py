@@ -34,10 +34,11 @@ class BaseTransformation(metaclass=ABCMeta):
 
 
 class PlayerAverage(BaseTransformation):
-    def __init__(self, window, stats):
+    def __init__(self, window, stats, post_agg_stats):
         super().__init__()
         self._window = window
         self._stats = stats
+        self._post_agg_stats = post_agg_stats
 
     def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         required_columns = ["player_id", "team_id", "game_id", "date"] + self._stats
@@ -48,8 +49,13 @@ class PlayerAverage(BaseTransformation):
             sorted_dataset
             .groupby(["player_id"])[self._stats]
             .apply(lambda x: x.shift(1).rolling(window=self._window, min_periods=1).mean())
-            .rename(columns=lambda col: f"{col}_{self._window}g_avg")
         )
+
+        for key, func in self._post_agg_stats.items():
+            averages = averages.assign(**{key: func})
+ 
+        averages = averages.rename(columns=lambda col: f"{col}_{self._window}g_avg")
+ 
         return sorted_dataset[["player_id", "team_id", "game_id"]].join(averages)
 
     def current_features(self, lineup: pd.DataFrame, historical_stats: pd.DataFrame) -> pd.DataFrame:
@@ -61,6 +67,13 @@ class PlayerAverage(BaseTransformation):
             historical_stats
             .groupby(["player_id"])
             .apply(lambda x: x.nlargest(self._window, "date")[self._stats].mean())
+        )
+
+        for key, func in self._post_agg_stats.items():
+            avgs = avgs.assign(**{key: func})
+        
+        avgs = (
+            avgs
             .rename(columns=lambda col: f"{col}_{self._window}g_avg")
             .reset_index()
         )
@@ -97,10 +110,11 @@ class PrevStartingRate(BaseTransformation):
 
 
 class OpponentAboveAverageAllowed(BaseTransformation):
-    def __init__(self, window, stats):
+    def __init__(self, window, stats, post_agg_stats):
         super().__init__()
         self._window = window
         self._stats = stats
+        self._post_agg_stats = post_agg_stats
 
     def _sum_stats_by_game_team(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         return (
@@ -124,16 +138,29 @@ class OpponentAboveAverageAllowed(BaseTransformation):
             )
         )
 
+    def _add_post_agg_stats(self, stats: pd.DataFrame) -> pd.DataFrame:
+        for key, func in self._post_agg_stats.items():
+            stats = stats.assign(**{key: func})
+        return stats
+
     def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         # total stats per game
-        total_per_game = self._sum_stats_by_game_team(historical_stats)
-
+        total_per_game = (
+            historical_stats
+            .pipe(self._sum_stats_by_game_team)
+            .pipe(self._add_post_agg_stats)
+        )
+            
         # average team stat scored
-        team_avg = self._historical_team_average(total_per_game)
+        team_avg = (
+            total_per_game
+            .pipe(self._historical_team_average)
+            .pipe(self._add_post_agg_stats)
+        )
 
         # above average stats scored
         above_avg_allowed = total_per_game.copy()
-        for stat in self._stats:
+        for stat in self._stats + list(self._post_agg_stats.keys()):
             above_avg_allowed[stat] = total_per_game[stat] - team_avg[stat]
 
         # average opponent allowed above average
@@ -143,7 +170,7 @@ class OpponentAboveAverageAllowed(BaseTransformation):
                 lambda x:
                     x[["opp_team_id", "game_id"]]
                     .join(
-                        x.groupby(["opp_team_id"])[self._stats]
+                        x.groupby(["opp_team_id"])[self._stats + list(self._post_agg_stats.keys())]
                         .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
                         .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_above_avg")
                     )
@@ -161,21 +188,29 @@ class OpponentAboveAverageAllowed(BaseTransformation):
 
     def current_features(self, lineup: pd.DataFrame, historical_stats: pd.DataFrame) -> pd.DataFrame:
         # total stats per game
-        total_per_game = self._sum_stats_by_game_team(historical_stats)
-
+        total_per_game = (
+            historical_stats
+            .pipe(self._sum_stats_by_game_team)
+            .pipe(self._add_post_agg_stats)
+        )
+            
         # average team stat scored
-        team_avg = self._historical_team_average(total_per_game)
+        team_avg = (
+            total_per_game
+            .pipe(self._historical_team_average)
+            .pipe(self._add_post_agg_stats)
+        )
 
         # above average stats scored
         above_avg_allowed = total_per_game.copy()
-        for stat in self._stats:
+        for stat in self._stats + list(self._post_agg_stats.keys()):
             above_avg_allowed[stat] = total_per_game[stat] - team_avg[stat]
 
         # average opponent allowed above average
         opp_avg_allowed = (
             above_avg_allowed
             .groupby(["opp_team_id"])
-            .apply(lambda x: x.nlargest(self._window, "date")[self._stats].mean())
+            .apply(lambda x: x.nlargest(self._window, "date")[self._stats + list(self._post_agg_stats.keys())].mean())
             .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_above_avg")
             .reset_index()
         )
@@ -191,10 +226,11 @@ class OpponentAboveAverageAllowed(BaseTransformation):
 
 
 class OpponentAverageAllowed(BaseTransformation):
-    def __init__(self, window, stats):
+    def __init__(self, window, stats, post_agg_stats):
         super().__init__()
         self._window = window
         self._stats = stats
+        self._post_agg_stats = post_agg_stats
 
     def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         required_columns = ["player_id", "team_id", "game_id", "opp_team_id", "date"] + self._stats
@@ -208,17 +244,20 @@ class OpponentAverageAllowed(BaseTransformation):
             .sort_values(by=["opp_team_id", "date"])
         )
 
-        opp_avg_allowed = (
+        averages = (
             opp_allowed_per_game
-            .pipe(
-                lambda x:
-                    x[["opp_team_id", "game_id"]]
-                    .join(
-                        x.groupby(["opp_team_id"])[self._stats]
-                        .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
-                        .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_avg")
-                    )
-            )
+            .groupby(["opp_team_id"])[self._stats]
+            .apply(lambda y: y.shift(1).rolling(window=self._window, min_periods=1).mean())
+        )
+
+        for key, func in self._post_agg_stats.items():
+            averages = averages.assign(**{key: func})
+        
+        averages = averages.rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_avg")
+
+        opp_avg_allowed = (
+            opp_allowed_per_game[["opp_team_id", "game_id"]]
+            .join(averages)
         )
 
         player_opp_avg_allowed = (
@@ -241,10 +280,17 @@ class OpponentAverageAllowed(BaseTransformation):
             .sort_values(by=["opp_team_id", "date"])
         )
 
-        opp_avg_allowed = (
+        averages = (
             opp_allowed_per_game
             .groupby(["opp_team_id"])
             .apply(lambda x: x.nlargest(self._window, "date")[self._stats].mean())
+        )
+
+        for key, func in self._post_agg_stats.items():
+            averages = averages.assign(**{key: func})
+
+        opp_avg_allowed = (
+            averages
             .rename(columns=lambda col: f"{col}_opp_allowed_{self._window}g_avg")
             .reset_index()
         )
@@ -257,10 +303,11 @@ class OpponentAverageAllowed(BaseTransformation):
 
 
 class CurrentTeammateAvgStats(BaseTransformation):
-    def __init__(self, window, stats):
+    def __init__(self, window, stats, post_agg_stats):
         super().__init__()
         self._window = window
         self._stats = stats
+        self._post_agg_stats = post_agg_stats
 
     def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         sorted_dataset = historical_stats.sort_values(by=["player_id", "date"])
@@ -281,6 +328,13 @@ class CurrentTeammateAvgStats(BaseTransformation):
             .query("player_id != teammate_id")
             .groupby(["game_id", "team_id", "player_id"])[self._stats]
             .sum(min_count=1)
+        )
+
+        for key, func in self._post_agg_stats.items():
+            teammate_averages = teammate_averages.assign(**{key: func})
+
+        teammate_averages = (
+            teammate_averages
             .rename(columns=lambda col: f"{col}_{self._window}g_proj_teammate_avg")
             .reset_index()
         )
@@ -308,6 +362,13 @@ class CurrentTeammateAvgStats(BaseTransformation):
             )
             .groupby(["game_id", "team_id", "player_id"])[self._stats]
             .sum(min_count=1)
+        )
+
+        for key, func in self._post_agg_stats.items():
+            teammate_averages = teammate_averages.assign(**{key: func})
+
+        teammate_averages = (
+            teammate_averages
             .rename(columns=lambda col: f"{col}_{self._window}g_proj_teammate_avg")
             .reset_index()
         )
@@ -315,10 +376,11 @@ class CurrentTeammateAvgStats(BaseTransformation):
 
 
 class HistoricalTeammateStats(BaseTransformation):
-    def __init__(self, window, stats):
+    def __init__(self, window, stats, post_agg_stats):
         super().__init__()
         self._window = window
         self._stats = stats
+        self._post_agg_stats = post_agg_stats
 
     def historical_features(self, historical_stats: pd.DataFrame) -> pd.DataFrame:
         # cross multiply player and teammate stats
@@ -339,8 +401,13 @@ class HistoricalTeammateStats(BaseTransformation):
             sorted_dataset
             .groupby(["player_id"])[self._stats]
             .apply(lambda x: x.shift(1).rolling(window=self._window, min_periods=1).mean())
-            .rename(columns=lambda col: f"{col}_{self._window}g_teammate_avg")
         )
+
+        for key, func in self._post_agg_stats.items():
+            averages = averages.assign(**{key: func})
+ 
+        averages = averages.rename(columns=lambda col: f"{col}_{self._window}g_teammate_avg")
+
         return sorted_dataset[["player_id", "team_id", "game_id"]].join(averages)
 
     def current_features(self, lineup: pd.DataFrame, historical_stats: pd.DataFrame) -> pd.DataFrame:
@@ -359,6 +426,13 @@ class HistoricalTeammateStats(BaseTransformation):
             teammate_stats
             .groupby(["player_id"])
             .apply(lambda x: x.nlargest(self._window, "date")[self._stats].mean())
+        )
+
+        for key, func in self._post_agg_stats.items():
+            avgs = avgs.assign(**{key: func})
+
+        avgs = (
+            avgs
             .rename(columns=lambda col: f"{col}_{self._window}g_teammate_avg")
             .reset_index()
         )
@@ -394,6 +468,9 @@ class PandasMissingIndicator(MissingIndicator):
     def transform(self, X):
         transformed = super().transform(X)
         return X.join(pd.DataFrame(transformed, columns=map("{}_missing".format, X.columns)))
+    
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X)
 
 
 class PandasVarianceThreshold(VarianceThreshold):
@@ -415,8 +492,7 @@ class DropColumns(BaseEstimator, TransformerMixin):
 
 def fanduel_score(x, suffix=""):
     return (
-        x["fg3m" + suffix] + x["ast" + suffix] * 1.5 + x["blk" + suffix] * 3 + x["fgm" + suffix] * 2
-        + x["ftm" + suffix] + x["reb" + suffix] * 1.2 + x["stl" + suffix] * 3 - x["tov" + suffix]
+        x["fg3m" + suffix] * 3 + x["fg2m" + suffix] * 2 + x["ftm" + suffix] + x["non_scoring_pts" + suffix]
     )
 
 
